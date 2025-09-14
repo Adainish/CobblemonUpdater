@@ -80,13 +80,18 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             jdaBuilder.addEventListeners(this);
             JDA jda = jdaBuilder.build();
             jda.awaitReady();
-            jda.upsertCommand(Commands.slash("cobblemonstatus", "Check the Cobblemon version status")).queue();
+            jda.upsertCommand(Commands.slash("cobblemonstatus", "Check the Cobblemon version status")
+                    .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "use_snapshots", "Use snapshot builds instead of releases", false))
+                    .queue();
             jda.upsertCommand(Commands.slash("setupdateurl", "Set the Cobblemon update URL")
                     .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.STRING, "url", "The update URL", true)).queue();
+            // In login() where you register slash commands:
             jda.upsertCommand(
                     Commands.slash("updatecobblemon", "Manually trigger a Cobblemon update")
                             .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "ignore_mc_version", "Ignore MC version and grab highest Cobblemon version", false)
+                            .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "use_snapshots", "Use snapshot builds instead of releases", false)
             ).queue();
+
             this.setJDA(jda);
             this.cobblemonVersionURL = Cobblemonupdater.config.cobblemonUpdateURL;
             Logger.log("Discord bot logged in successfully!");
@@ -109,18 +114,27 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
         switch (event.getName()) {
             case "cobblemonstatus" -> {
+                boolean useSnapshots = false;
+                if (event.getOption("use_snapshots") != null) {
+                    useSnapshots = event.getOption("use_snapshots").getAsBoolean();
+                }
                 String currentVersion = getCurrentCobblemonVersion();
-                String latestVersion = getLatestCobblemonVersionFromURL();
+                String latestVersion = getLatestCobblemonVersionFromURL(useSnapshots);
                 boolean upToDate = false;
                 if (currentVersion != null && latestVersion != null) {
                     upToDate = normalizeVersion(currentVersion).equals(normalizeVersion(latestVersion));
                 }
                 String mcVersion = getCurrentMinecraftVersion();
+                String latestRelease = getLatestCobblemonVersionFromURL(false);
+                String latestSnapshot = getLatestCobblemonVersionFromURL(true);
                 String reply = "Current Minecraft version: " + (mcVersion != null ? mcVersion : "Unknown") +
                         "\nCurrent Cobblemon version: " + (currentVersion != null ? currentVersion : "Unknown") +
-                        "\nLatest Cobblemon version: " + (latestVersion != null ? latestVersion : "Unknown") +
+                        "\nLatest Cobblemon release: " + (latestRelease != null ? latestRelease : "Unknown") +
+                        "\nLatest Cobblemon snapshot: " + (latestSnapshot != null ? latestSnapshot : "Unknown") +
                         "\nServer is " + (upToDate ? "up to date ✅" : "out of date ❌");
+
                 event.reply(reply).queue();
+
             }
             case "setupdateurl" -> {
                 String url = event.getOption("url").getAsString();
@@ -130,16 +144,23 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 Cobblemonupdater.config.saveConfig();
                 event.reply("Cobblemon update URL set to: " + url).setEphemeral(true).queue();
             }
+            // In onSlashCommandInteraction:
             case "updatecobblemon" -> {
                 boolean ignoreMcVersion = false;
+                boolean useSnapshots = false;
                 if (event.getOption("ignore_mc_version") != null) {
                     ignoreMcVersion = event.getOption("ignore_mc_version").getAsBoolean();
+                }
+                if (event.getOption("use_snapshots") != null) {
+                    useSnapshots = event.getOption("use_snapshots").getAsBoolean();
                 }
                 event.reply("Starting Cobblemon update...").setEphemeral(true).queue();
                 long userId = event.getUser().getIdLong();
                 boolean finalIgnoreMcVersion = ignoreMcVersion;
-                new Thread(() -> updateCobblemon(userId, finalIgnoreMcVersion)).start();
+                boolean finalUseSnapshots = useSnapshots;
+                new Thread(() -> updateCobblemon(userId, finalIgnoreMcVersion, finalUseSnapshots)).start();
             }
+
             case "reloadconfig" -> {
                 try {
                     Cobblemonupdater.instance.reload();
@@ -164,40 +185,41 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         this.broadcast(title, "\n" + message, channel, pingEveryone);
     }
 
-    public String getLatestCobblemonVersionFromURL() {
+    public String getLatestCobblemonVersionFromURL(boolean useSnapshots) {
         String latestVersion = "unknown";
-        if (this.cobblemonVersionURL == null || this.cobblemonVersionURL.isEmpty()) {
-            return latestVersion;
-        }
-        // Try Maven first
-        latestVersion = getLatestCobblemonVersionURL(this.cobblemonVersionURL);
-        if (latestVersion == null || latestVersion.equals("unknown")) {
-            // Fallback: Try Modrinth API
-            try (InputStream in = new URL("https://api.modrinth.com/v2/project/cobblemon/version").openStream()) {
-                StringBuilder json = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        json.append(line);
-                    }
+        String artefactsBase = "https://artefacts.cobblemon.com";
+        String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/fabric/" : "/releases/com/cobblemon/fabric/";
+        String listUrl = artefactsBase + artefactsPath;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
+            String line;
+            Pattern dirPattern = Pattern.compile("href=\"\\.\\/(.+?)\\/\"");
+            List<String> versionDirs = new ArrayList<>();
+            while ((line = reader.readLine()) != null) {
+                Matcher dirMatcher = dirPattern.matcher(line);
+                while (dirMatcher.find()) {
+                    versionDirs.add(dirMatcher.group(1));
                 }
-                String jsonString = json.toString();
-                int idx = jsonString.indexOf("\"version_number\":\"");
-                if (idx != -1) {
-                    int start = idx + 18;
-                    int end = jsonString.indexOf("\"", start);
-                    if (end > start) {
-                        latestVersion = jsonString.substring(start, end);
-                    }
-                }
-            } catch (Exception e) {
-                Logger.log(e);
-                // Both Maven and Modrinth failed
-                latestVersion = "No servers available for downloading";
             }
+            // Find the highest version directory
+            String highestVersion = null;
+            for (String dir : versionDirs) {
+                // Only consider non-snapshot dirs if not using snapshots
+                if (!useSnapshots && dir.contains("SNAPSHOT")) continue;
+                String version = dir.split("\\+")[0];
+                if (highestVersion == null || compareVersions(version, highestVersion) > 0) {
+                    highestVersion = version;
+                }
+            }
+            if (highestVersion != null) {
+                latestVersion = highestVersion;
+            }
+        } catch (Exception e) {
+            Logger.log(e);
+            latestVersion = "No servers available for downloading";
         }
         return latestVersion;
     }
+
 
 
 
@@ -304,8 +326,8 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         return 0;
     }
 
-    public void updateCobblemon(long userID, boolean ignoreMcVersion) {
-        String latestVersion = this.getLatestCobblemonVersionFromURL();
+    public void updateCobblemon(long userID, boolean ignoreMcVersion, boolean useSnapshots) {
+        String latestVersion = this.getLatestCobblemonVersionFromURL(useSnapshots);
         String currentVersion = this.getCurrentCobblemonVersion();
 
         if (latestVersion == null || latestVersion.equals("unknown") || latestVersion.equals("No servers available for downloading")) {
@@ -344,76 +366,122 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             Logger.log("Maven download failed, trying Modrinth...");
         }
 
-        // Fallback: Try Modrinth
+        // Helper class
+        class FabricJar {
+            String version;
+            String url;
+            String filename;
+            String mcVersion;
+        }
+
+        // Fallback: Try Cobblemon artefacts
         if (!downloaded) {
-            try (InputStream in = new URL("https://api.modrinth.com/v2/project/cobblemon/version").openStream()) {
-                StringBuilder json = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) json.append(line);
-                }
-                String jsonString = json.toString();
-                class FabricJar {
-                    String version;
-                    String url;
-                    String filename;
-                    String mcVersion;
-                }
+            try {
+                String artefactsBase = "https://artefacts.cobblemon.com";
+                String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/fabric/" : "/releases/com/cobblemon/fabric/";
+                String listUrl = artefactsBase + artefactsPath;
+                Logger.log("[DEBUG] Fetching available jars from: " + listUrl);
+
                 List<FabricJar> fabricJars = new ArrayList<>();
-                int idx = 0;
-                while ((idx = jsonString.indexOf("\"filename\":\"", idx)) != -1) {
-                    int fnameStart = idx + 12;
-                    int fnameEnd = jsonString.indexOf("\"", fnameStart);
-                    if (fnameEnd == -1) break;
-                    String filename = jsonString.substring(fnameStart, fnameEnd);
-                    if (filename.contains("fabric")) {
-                        String version = "0.0.0";
-                        String mcVersion = null;
-                        int dashIdx = filename.indexOf("fabric-");
-                        int plusIdx = filename.indexOf("+", dashIdx);
-                        int dotJarIdx = filename.indexOf(".jar", plusIdx);
-                        if (dashIdx != -1 && plusIdx != -1 && dotJarIdx != -1) {
-                            version = filename.substring(dashIdx + 7, plusIdx);
-                            mcVersion = filename.substring(plusIdx + 1, dotJarIdx);
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
+                    String line;
+                    Pattern jarPattern = Pattern.compile("href=\"(Cobblemon-fabric-([\\d\\.]+)\\+([\\w\\.]+)\\.jar)\"");
+                    while ((line = reader.readLine()) != null) {
+                        Logger.log("[DEBUG] Read line: " + line);
+                        Matcher matcher = jarPattern.matcher(line);
+                        while (matcher.find()) {
+                            String filename = matcher.group(1);
+                            String version = matcher.group(2);
+                            String mcVersion = matcher.group(3);
+                            String url = listUrl + filename;
+                            Logger.log("[DEBUG] Matched jar: filename=" + filename + ", version=" + version + ", mcVersion=" + mcVersion + ", url=" + url);
+                            FabricJar jar = new FabricJar();
+                            jar.version = version;
+                            jar.url = url;
+                            jar.filename = filename;
+                            jar.mcVersion = mcVersion;
+                            fabricJars.add(jar);
                         }
-                        int urlIdx = jsonString.indexOf("\"url\":\"", fnameEnd);
-                        if (urlIdx != -1) {
-                            int urlStart = urlIdx + 7;
-                            int urlEnd = jsonString.indexOf("\"", urlStart);
-                            if (urlEnd != -1) {
-                                String modrinthJarUrl = jsonString.substring(urlStart, urlEnd);
-                                FabricJar jar = new FabricJar();
-                                jar.version = version;
-                                jar.url = modrinthJarUrl;
-                                jar.filename = filename;
-                                jar.mcVersion = mcVersion;
-                                fabricJars.add(jar);
+                    }
+                }
+
+// After reading the root directory and before filtering by MC version
+                if (fabricJars.isEmpty()) {
+                    // Parse for subdirectories (version folders)
+                    Pattern dirPattern = Pattern.compile("href=\"\\.\\/(.+?)\\/\"");
+                    List<String> versionDirs = new ArrayList<>();
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            Matcher dirMatcher = dirPattern.matcher(line);
+                            while (dirMatcher.find()) {
+                                String dir = dirMatcher.group(1);
+                                Logger.log("[DEBUG] Found version directory: " + dir);
+                                versionDirs.add(dir);
                             }
                         }
                     }
-                    idx = fnameEnd;
+                    // For each version directory, look for jars
+                    for (String dir : versionDirs) {
+                        String dirUrl = listUrl + dir + "/";
+                        Logger.log("[DEBUG] Checking directory: " + dirUrl);
+                        try (BufferedReader dirReader = new BufferedReader(new InputStreamReader(new URL(dirUrl).openStream()))) {
+                            String line;
+                            // Match both with and without build suffix
+                            Pattern jarPattern = Pattern.compile("href=\"\\./(fabric-([\\d\\.]+)\\+([\\d\\.]+)(?:-[^\"/]+)?\\.jar)\"");
+                            while ((line = dirReader.readLine()) != null) {
+                                Logger.log("[DEBUG] [DIR] Read line: " + line);
+                                Matcher jarMatcher = jarPattern.matcher(line);
+                                while (jarMatcher.find()) {
+                                    String filename = jarMatcher.group(1);
+                                    String cobblemonVersion = jarMatcher.group(2);
+                                    String mcVersion = jarMatcher.group(3);
+                                    String url = dirUrl + filename;
+                                    Logger.log("[DEBUG] Matched jar: filename=" + filename + ", version=" + cobblemonVersion + ", mcVersion=" + mcVersion + ", url=" + url);
+                                    FabricJar jar = new FabricJar();
+                                    jar.version = cobblemonVersion;
+                                    jar.url = url;
+                                    jar.filename = filename;
+                                    jar.mcVersion = mcVersion;
+                                    fabricJars.add(jar);
+                                }
+                        }
+                        } catch (Exception e) {
+                            Logger.log("[DEBUG] Failed to read directory: " + dirUrl + " - " + e.getMessage());
+                        }
+                    }
+
                 }
+
+
+                Logger.log("[DEBUG] Total jars found: " + fabricJars.size());
+
                 // Filter by MC version if not ignoring
                 List<FabricJar> matching = new ArrayList<>();
                 if (ignoreMcVersion) {
                     matching.addAll(fabricJars);
+                    Logger.log("[DEBUG] ignoreMcVersion=true, using all jars");
                 } else {
                     for (FabricJar jar : fabricJars) {
+                        Logger.log("[DEBUG] Checking jar mcVersion=" + jar.mcVersion + " against currentMcVersion=" + currentMcVersion);
                         if (jar.mcVersion != null && jar.mcVersion.equals(currentMcVersion)) {
                             matching.add(jar);
                         }
                     }
                 }
+                Logger.log("[DEBUG] Matching jars after MC version filter: " + matching.size());
+
                 if (matching.isEmpty()) {
-                    Logger.log("No fabric jar found" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + " in Modrinth response.");
+                    Logger.log("No fabric jar found" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + " in artefacts response.");
                 } else {
                     Logger.log("Available Fabric jars" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + ":");
                     for (FabricJar jar : matching) {
-                        Logger.log("Filename: " + jar.filename + ", Version: " + jar.version + ", MC: " + jar.mcVersion + ", URL: " + jar.url);
+                        Logger.log("[DEBUG] Filename: " + jar.filename + ", Version: " + jar.version + ", MC: " + jar.mcVersion + ", URL: " + jar.url);
                     }
                     // Find the highest version
                     FabricJar latest = matching.get(0);
                     for (FabricJar jar : matching) {
+                        Logger.log("[DEBUG] Comparing versions: " + jar.version + " vs " + latest.version);
                         if (compareVersions(jar.version, latest.version) > 0) {
                             latest = jar;
                         }
@@ -424,11 +492,13 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                         Files.createDirectories(modsDir);
                         Path tempFile = modsDir.resolve("cobblemon-latest.jar");
                         Files.copy(jarIn, tempFile, StandardCopyOption.REPLACE_EXISTING);
+                        Logger.log("[DEBUG] Downloaded jar to: " + tempFile.toString());
                         downloaded = true;
                     }
                 }
             } catch (Exception e) {
-                Logger.log("Modrinth download failed.");
+                Logger.log("Cobblemon artefacts download failed.");
+                Logger.log("[DEBUG] Exception: " + e.getMessage());
             }
         }
 
