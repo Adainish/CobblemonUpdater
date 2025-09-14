@@ -8,10 +8,11 @@ import net.dv8tion.jda.api.OnlineStatus;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.fml.loading.FMLLoader;
+import net.neoforged.fml.loading.moddiscovery.ModInfo;
 import org.w3c.dom.Document;
 import org.w3c.dom.NodeList;
 
@@ -19,7 +20,6 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.InvocationTargetException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
@@ -204,7 +204,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
     public String getLatestCobblemonVersionFromURL(boolean useSnapshots) {
         String latestVersion = "unknown";
         String artefactsBase = "https://artefacts.cobblemon.com";
-        String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/fabric/" : "/releases/com/cobblemon/fabric/";
+        String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/neoforge/" : "/releases/com/cobblemon/neoforge/";
         String listUrl = artefactsBase + artefactsPath;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
             String line;
@@ -241,7 +241,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
 
     public String getLatestCobblemonVersionURL(String repoBaseUrl) {
         String group = "com.cobblemon";
-        String artifact = "fabric";
+        String artifact = "neoforge";
         String metadataUrl = repoBaseUrl;
         if (!metadataUrl.endsWith("/")) metadataUrl += "/";
         metadataUrl += group.replace('.', '/') + "/" + artifact + "/maven-metadata.xml";
@@ -266,43 +266,33 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
 
     public String getCurrentMinecraftVersion() {
         try {
-            return FabricLoader.getInstance().getModContainer("minecraft")
-                    .flatMap(mc -> mc.getMetadata().getVersion().getFriendlyString() != null
-                            ? java.util.Optional.of(mc.getMetadata().getVersion().getFriendlyString())
-                            : java.util.Optional.empty())
-                    .orElse("unknown");
+            // NeoForge: Use ModList to get the Minecraft mod version
+            ModInfo mcInfo =
+                    FMLLoader.getLoadingModList().getModFileById("minecraft").getMods().get(0);
+            String version = mcInfo.getVersion().toString();
+            return version != null ? version : "unknown";
         } catch (Exception e) {
             Logger.log(e);
             return "unknown";
         }
     }
 
+
     //function to get the current cobblemon version installed on the mc server
-    public String getCurrentCobblemonVersion() throws RuntimeException {
-        String version = "unknown";
+    public String getCurrentCobblemonVersion() {
         try {
-            if (Class.forName("net.fabricmc.loader.api.FabricLoader") != null) {
-                Object fabricLoader = Class.forName("net.fabricmc.loader.api.FabricLoader")
-                        .getMethod("getInstance").invoke(null);
-                Object optional = fabricLoader.getClass()
-                        .getMethod("getModContainer", String.class).invoke(fabricLoader, "cobblemon");
-                Class<?> optionalClass = Class.forName("java.util.Optional");
-                boolean isPresent = (boolean) optionalClass.getMethod("isPresent").invoke(optional);
-                if (isPresent) {
-                    Object modContainer = optionalClass.getMethod("get").invoke(optional);
-                    Object metadata = modContainer.getClass().getMethod("getMetadata").invoke(modContainer);
-                    java.lang.reflect.Method getVersionMethod = metadata.getClass().getMethod("getVersion");
-                    getVersionMethod.setAccessible(true); // <-- This line is key
-                    Object versionObj = getVersionMethod.invoke(metadata);
-                    version = versionObj.toString();
-                }
-            }
-        } catch (ClassNotFoundException | IllegalAccessException | InvocationTargetException |
-                 NoSuchMethodException e) {
-            throw new RuntimeException(e);
+            ModInfo cobblemonInfo = FMLLoader.getLoadingModList()
+                    .getModFileById("cobblemon")
+                    .getMods()
+                    .get(0);
+            String version = cobblemonInfo.getVersion().toString();
+            return version != null ? version : "unknown";
+        } catch (Exception e) {
+            Logger.log(e);
+            return "unknown";
         }
-        return version;
     }
+
 
 
 
@@ -365,7 +355,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         }
 
         String group = "com.cobblemon";
-        String artifact = "fabric";
+        String artifact = "neoforge";
         String mavenBase = this.cobblemonVersionURL;
         if (!mavenBase.endsWith("/")) mavenBase += "/";
         String mavenJarUrl = mavenBase + group.replace('.', '/') + "/" + artifact + "/" + latestVersion + "/" + artifact + "-" + latestVersion + ".jar";
@@ -383,7 +373,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         }
 
         // Helper class
-        class FabricJar {
+        class NeoForgeJar {
             String version;
             String url;
             String filename;
@@ -394,14 +384,14 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         if (!downloaded) {
             try {
                 String artefactsBase = "https://artefacts.cobblemon.com";
-                String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/fabric/" : "/releases/com/cobblemon/fabric/";
+                String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/neoforge/" : "/releases/com/cobblemon/neoforge/";
                 String listUrl = artefactsBase + artefactsPath;
                 Logger.log("[DEBUG] Fetching available jars from: " + listUrl);
 
-                List<FabricJar> fabricJars = new ArrayList<>();
+                List<NeoForgeJar> neoForgeJars = new ArrayList<>();
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
                     String line;
-                    Pattern jarPattern = Pattern.compile("href=\"(Cobblemon-fabric-([\\d\\.]+)\\+([\\w\\.]+)\\.jar)\"");
+                    Pattern jarPattern = Pattern.compile("href=\"(Cobblemon-neoforge-([\\d\\.]+)\\+([\\w\\.]+)\\.jar)\"");
                     while ((line = reader.readLine()) != null) {
                         Logger.log("[DEBUG] Read line: " + line);
                         Matcher matcher = jarPattern.matcher(line);
@@ -411,18 +401,18 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                             String mcVersion = matcher.group(3);
                             String url = listUrl + filename;
                             Logger.log("[DEBUG] Matched jar: filename=" + filename + ", version=" + version + ", mcVersion=" + mcVersion + ", url=" + url);
-                            FabricJar jar = new FabricJar();
+                            NeoForgeJar jar = new NeoForgeJar();
                             jar.version = version;
                             jar.url = url;
                             jar.filename = filename;
                             jar.mcVersion = mcVersion;
-                            fabricJars.add(jar);
+                            neoForgeJars.add(jar);
                         }
                     }
                 }
 
 // After reading the root directory and before filtering by MC version
-                if (fabricJars.isEmpty()) {
+                if (neoForgeJars.isEmpty()) {
                     // Parse for subdirectories (version folders)
                     Pattern dirPattern = Pattern.compile("href=\"\\.\\/(.+?)\\/\"");
                     List<String> versionDirs = new ArrayList<>();
@@ -444,7 +434,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                         try (BufferedReader dirReader = new BufferedReader(new InputStreamReader(new URL(dirUrl).openStream()))) {
                             String line;
                             // Match both with and without build suffix
-                            Pattern jarPattern = Pattern.compile("href=\"\\./(fabric-([\\d\\.]+)\\+([\\d\\.]+)(?:-[^\"/]+)?\\.jar)\"");
+                            Pattern jarPattern = Pattern.compile("href=\"\\./(neoforge-([\\d\\.]+)\\+([\\d\\.]+)(?:-[^\"/]+)?\\.jar)\"");
                             while ((line = dirReader.readLine()) != null) {
                                 Logger.log("[DEBUG] [DIR] Read line: " + line);
                                 Matcher jarMatcher = jarPattern.matcher(line);
@@ -454,12 +444,12 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                                     String mcVersion = jarMatcher.group(3);
                                     String url = dirUrl + filename;
                                     Logger.log("[DEBUG] Matched jar: filename=" + filename + ", version=" + cobblemonVersion + ", mcVersion=" + mcVersion + ", url=" + url);
-                                    FabricJar jar = new FabricJar();
+                                    NeoForgeJar jar = new NeoForgeJar();
                                     jar.version = cobblemonVersion;
                                     jar.url = url;
                                     jar.filename = filename;
                                     jar.mcVersion = mcVersion;
-                                    fabricJars.add(jar);
+                                    neoForgeJars.add(jar);
                                 }
                         }
                         } catch (Exception e) {
@@ -470,15 +460,15 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 }
 
 
-                Logger.log("[DEBUG] Total jars found: " + fabricJars.size());
+                Logger.log("[DEBUG] Total jars found: " + neoForgeJars.size());
 
                 // Filter by MC version if not ignoring
-                List<FabricJar> matching = new ArrayList<>();
+                List<NeoForgeJar> matching = new ArrayList<>();
                 if (ignoreMcVersion) {
-                    matching.addAll(fabricJars);
+                    matching.addAll(neoForgeJars);
                     Logger.log("[DEBUG] ignoreMcVersion=true, using all jars");
                 } else {
-                    for (FabricJar jar : fabricJars) {
+                    for (NeoForgeJar jar : neoForgeJars) {
                         Logger.log("[DEBUG] Checking jar mcVersion=" + jar.mcVersion + " against currentMcVersion=" + currentMcVersion);
                         if (jar.mcVersion != null && jar.mcVersion.equals(currentMcVersion)) {
                             matching.add(jar);
@@ -488,15 +478,15 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 Logger.log("[DEBUG] Matching jars after MC version filter: " + matching.size());
 
                 if (matching.isEmpty()) {
-                    Logger.log("No fabric jar found" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + " in artefacts response.");
+                    Logger.log("No neoforge jar found" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + " in artefacts response.");
                 } else {
-                    Logger.log("Available Fabric jars" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + ":");
-                    for (FabricJar jar : matching) {
+                    Logger.log("Available Neoforge jars" + (ignoreMcVersion ? "" : " for MC version " + currentMcVersion) + ":");
+                    for (NeoForgeJar jar : matching) {
                         Logger.log("[DEBUG] Filename: " + jar.filename + ", Version: " + jar.version + ", MC: " + jar.mcVersion + ", URL: " + jar.url);
                     }
                     // Find the highest version
-                    FabricJar latest = matching.get(0);
-                    for (FabricJar jar : matching) {
+                    NeoForgeJar latest = matching.get(0);
+                    for (NeoForgeJar jar : matching) {
                         Logger.log("[DEBUG] Comparing versions: " + jar.version + " vs " + latest.version);
                         if (compareVersions(jar.version, latest.version) > 0) {
                             latest = jar;
@@ -522,10 +512,10 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         if (downloaded) {
             try {
                 Path modsDir = Paths.get("mods");
-                String newJarName = "Cobblemon-fabric-" + normalizeVersion(latestVersion) + "+" + getCurrentMinecraftVersion() + ".jar";
+                String newJarName = "Cobblemon-neoforge-" + normalizeVersion(latestVersion) + "+" + getCurrentMinecraftVersion() + ".jar";
                 Path newJarPath = modsDir.resolve(newJarName);
 
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(modsDir, "Cobblemon-fabric-*.jar")) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(modsDir, "Cobblemon-neoforge-*.jar")) {
                     for (Path path : stream) {
                         if (!path.getFileName().toString().equals(newJarName)) {
                             Files.deleteIfExists(path);
@@ -623,7 +613,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             try (java.util.jar.JarFile jar = new java.util.jar.JarFile(jarFile.toFile())) {
                 // Validation logic (optional: check manifest, etc.)
                 // Remove old jars except the new one
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(modsDir, "Cobblemon-fabric-*.jar")) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(modsDir, "Cobblemon-neoforge-*.jar")) {
                     for (Path path : stream) {
                         if (!path.getFileName().toString().equals(fileName)) {
                             Files.deleteIfExists(path);
