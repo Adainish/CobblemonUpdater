@@ -80,17 +80,28 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             jdaBuilder.addEventListeners(this);
             JDA jda = jdaBuilder.build();
             jda.awaitReady();
+            Logger.log("Registering /cobblemonstatus command");
             jda.upsertCommand(Commands.slash("cobblemonstatus", "Check the Cobblemon version status")
-                    .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "use_snapshots", "Use snapshot builds instead of releases", false))
+                            .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "use_snapshots", "Use snapshot builds instead of releases", false))
                     .queue();
+
+            Logger.log("Registering /setupdateurl command");
             jda.upsertCommand(Commands.slash("setupdateurl", "Set the Cobblemon update URL")
                     .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.STRING, "url", "The update URL", true)).queue();
-            // In login() where you register slash commands:
+
+            Logger.log("Registering /updatespecified command");
+            jda.upsertCommand(
+                    Commands.slash("updatespecified", "Update Cobblemon with a specific jar from a URL")
+                            .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.STRING, "url", "Direct URL to the jar", true)
+            ).queue();
+
+            Logger.log("Registering /updatecobblemon command");
             jda.upsertCommand(
                     Commands.slash("updatecobblemon", "Manually trigger a Cobblemon update")
                             .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "ignore_mc_version", "Ignore MC version and grab highest Cobblemon version", false)
                             .addOption(net.dv8tion.jda.api.interactions.commands.OptionType.BOOLEAN, "use_snapshots", "Use snapshot builds instead of releases", false)
             ).queue();
+
 
             this.setJDA(jda);
             this.cobblemonVersionURL = Cobblemonupdater.config.cobblemonUpdateURL;
@@ -160,7 +171,12 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 boolean finalUseSnapshots = useSnapshots;
                 new Thread(() -> updateCobblemon(userId, finalIgnoreMcVersion, finalUseSnapshots)).start();
             }
-
+            case "updatespecified" -> {
+                String url = event.getOption("url").getAsString();
+                event.reply("Starting update from specified URL...").setEphemeral(true).queue();
+                long userId = event.getUser().getIdLong();
+                new Thread(() -> updateCobblemonFromUrl(userId, url)).start();
+            }
             case "reloadconfig" -> {
                 try {
                     Cobblemonupdater.instance.reload();
@@ -532,6 +548,107 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             this.sendDiscordDM(userID, "Could not download the latest Cobblemon jar from any source.");
         }
     }
+
+    public void updateCobblemonFromUrl(long userID, String jarUrl) {
+        try {
+            // Step 1: Download the HTML page
+            HttpURLConnection conn = (HttpURLConnection) new URL(jarUrl).openConnection();
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            int responseCode = conn.getResponseCode();
+            String contentType = conn.getContentType();
+            Logger.log("Initial URL: " + jarUrl);
+            Logger.log("HTTP response code: " + responseCode);
+            Logger.log("Content-Type: " + contentType);
+
+            if (responseCode != 200 || (contentType != null && !contentType.contains("html"))) {
+                this.sendDiscordDM(userID, "Failed to fetch artifact page: invalid response.");
+                return;
+            }
+
+            // Step 2: Parse HTML for the raw artifact download link
+            String html;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                html = sb.toString();
+            }
+            Pattern p = Pattern.compile("href=\"([^\"]+/artifacts/raw/[^\"]+\\.jar[^\"]*)\"");
+            Matcher m = p.matcher(html);
+            String rawHref = null;
+            while (m.find()) {
+                String candidate = m.group(1);
+                if (candidate.contains("/artifacts/raw/")) {
+                    rawHref = candidate;
+                    break;
+                }
+            }
+            if (rawHref == null) {
+                Logger.log("Could not find raw artifact link in HTML.");
+                this.sendDiscordDM(userID, "Could not find the JAR download link on the artifact page.");
+                return;
+            }
+
+            // Step 3: Build the absolute URL
+            URL base = new URL(jarUrl);
+            String rawUrl = new URL(base, rawHref).toString();
+            Logger.log("Resolved raw artifact URL: " + rawUrl);
+
+            // Step 4: Download the JAR (only once)
+            HttpURLConnection rawConn = (HttpURLConnection) new URL(rawUrl).openConnection();
+            rawConn.setRequestProperty("User-Agent", "Mozilla/5.0");
+            int rawCode = rawConn.getResponseCode();
+            String rawType = rawConn.getContentType();
+            Logger.log("Raw JAR HTTP response code: " + rawCode);
+            Logger.log("Raw JAR Content-Type: " + rawType);
+
+            if (rawCode != 200 || (rawType != null && !rawType.contains("jar") && !rawType.contains("octet-stream"))) {
+                this.sendDiscordDM(userID, "Failed to download JAR: invalid response from raw artifact URL.");
+                return;
+            }
+
+            String fileName = rawUrl.substring(rawUrl.lastIndexOf('/') + 1);
+            int jarIndex = fileName.indexOf(".jar");
+            if (jarIndex != -1) {
+                fileName = fileName.substring(0, jarIndex + 4);
+            }
+            Path modsDir = Paths.get("mods");
+            Files.createDirectories(modsDir);
+            Path jarFile = modsDir.resolve(fileName);
+            try (InputStream in = rawConn.getInputStream()) {
+                Files.copy(in, jarFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            // Step 5: Validate the JAR from disk
+            try (java.util.jar.JarFile jar = new java.util.jar.JarFile(jarFile.toFile())) {
+                // Validation logic (optional: check manifest, etc.)
+                // Remove old jars except the new one
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(modsDir, "Cobblemon-fabric-*.jar")) {
+                    for (Path path : stream) {
+                        if (!path.getFileName().toString().equals(fileName)) {
+                            Files.deleteIfExists(path);
+                        }
+                    }
+                }
+                this.sendDiscordDM(userID, "Downloaded and replaced Cobblemon with the specified jar: " + fileName);
+                this.sendDiscordDM(userID, "Rebooting the Minecraft server to apply the update...");
+                try { Thread.sleep(5000); } catch (InterruptedException e) { /*ignore*/ }
+                MinecraftServer server = Cobblemonupdater.getServer();
+                if (server != null) server.halt(true);
+            } catch (Exception e) {
+                Logger.log("Downloaded file is not a valid jar: " + e.getMessage());
+                Files.deleteIfExists(jarFile);
+                this.sendDiscordDM(userID, "Downloaded file is not a valid Cobblemon jar.");
+            }
+        } catch (Exception e) {
+            Logger.log(e);
+            this.sendDiscordDM(userID, "Failed to download or replace Cobblemon jar from the specified URL.");
+        }
+    }
+
+
+
+
 
 
 }
