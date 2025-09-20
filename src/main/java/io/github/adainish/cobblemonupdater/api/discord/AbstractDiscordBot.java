@@ -1,6 +1,5 @@
 package io.github.adainish.cobblemonupdater.api.discord;
 
-import io.github.adainish.cobblemonupdater.Cobblemonupdater;
 import io.github.adainish.cobblemonupdater.api.Logger;
 import net.dv8tion.jda.api.*;
 import net.dv8tion.jda.api.entities.Activity;

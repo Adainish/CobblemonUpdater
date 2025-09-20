@@ -4,8 +4,8 @@
     <facet type="minecraft" name="Minecraft">
       <configuration>
         <autoDetectTypes>
-          <platformType>FABRIC</platformType>
           <platformType>MIXIN</platformType>
+          <platformType>NEOFORGE</platformType>
           <platformType>MCP</platformType>
         </autoDetectTypes>
         <projectReimportVersion>1</projectReimportVersion>
@@ -13,6 +13,9 @@
     </facet>
   </component>
   <component name="McpModuleSettings">
+    <option name="mappingFile" value="C:\Users\Gebruiker\Documents\GitHub\CobblemonUpdater\build\neoForm\neoFormJoined1.21.1-20240808.144430\steps\mergeMappings\output.tsrg" />
     <option name="minecraftVersion" value="1.21.1" />
+    <option name="platformVersion" value="21.1.172" />
+    <option name="srgType" value="TSRG" />
   </component>
 </module>

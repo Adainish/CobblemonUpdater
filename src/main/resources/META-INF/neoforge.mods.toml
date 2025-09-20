@@ -1,0 +1,19 @@
+modLoader = "javafml"
+loaderVersion = "[2,)" # NeoForge/FML loader version range
+license = "All-Rights-Reserved"
+
+[[mods]]
+modId = "cobblemonupdater"
+version = "1.0.0"
+displayName = "Cobblemon Updater"
+description = "Update cobblemon version straight through discord."
+authors = "Winglet"
+displayURL = ""
+logoFile = "assets/cobblemonupdater/icon.png"
+
+[[dependencies.cobblemonupdater]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.21.1,)"
+ordering = "NONE"
+side = "SERVER"

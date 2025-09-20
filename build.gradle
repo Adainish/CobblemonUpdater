@@ -2,8 +2,9 @@ plugins {
     id 'java-library'
     id 'maven-publish'
     id 'net.neoforged.gradle.userdev' version '7.0.192'
+    id 'com.gradleup.shadow' version '8.3.0'
+//    For some reason neoforge demands java 21 building, so we had to upgrade shadow to a version that supports it.
 
-    id("com.github.johnrengelman.shadow") version "7.1.2"
 }
 
 tasks.named('wrapper', Wrapper).configure {
@@ -19,7 +20,21 @@ version = mod_version
 group = mod_group_id
 
 repositories {
-    // Add here additional repositories if required by some of the dependencies below.
+    mavenCentral()
+
+    maven {
+        name = 'm2'
+        url = uri("https://plugins.gradle.org/m2/")
+    }
+    maven {
+        name = 'Sonatype Snapshots'
+        url = uri("https://oss.sonatype.org/content/repositories/snapshots/")
+    }
+
+    maven {
+        name = 'Sonatype 01 Snapshots'
+        url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+    }
 }
 
 base {
@@ -27,7 +42,11 @@ base {
 }
 
 // Mojang ships Java 21 to end users in 1.21.1, so mods should target Java 21.
-java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
 
 //minecraft.accessTransformers.file rootProject.file('src/main/resources/META-INF/accesstransformer.cfg')
 //minecraft.accessTransformers.entry public net.minecraft.client.Minecraft textureManager # textureManager
@@ -97,8 +116,8 @@ dependencies {
     // And its provides the option to then use net.minecraft as the group, and one of; client, server or joined as the module name, plus the game version as version.
     // For all intends and purposes: You can treat this dependency as if it is a normal library you would use.
     implementation "net.neoforged:neoforge:${neo_version}"
-    implementation(fileTree(dir: 'libs', include: ['JDA-5.0.2-withDependencies-no-opus.jar']))
-    shadow group: 'net.dv8tion', name: 'JDA', version:'5.0.2'
+    implementation(fileTree(dir: 'libs', include: ['JDA-5.6.0-withDependencies-no-opus.jar']))
+    shadow group: 'net.dv8tion', name: 'JDA', version:'5.6.0'
     // Example optional mod dependency with JEI
     // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
     // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
@@ -122,6 +141,15 @@ dependencies {
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
 }
 
+configurations.configureEach {
+    resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+        if (details.requested.group == 'org.ow2.asm') {
+            details.useVersion '9.6'
+        }
+    }
+}
+
+
 // This block of code expands all declared replace properties in the specified resource targets.
 // A missing property will result in an error. Properties are expanded using ${} Groovy notation.
 // When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
@@ -137,7 +165,7 @@ tasks.withType(ProcessResources).configureEach {
             mod_license            : mod_license,
             mod_version            : mod_version,
             mod_authors            : mod_authors,
-            mod_description        : mod_description
+            mod_description        : description
     ]
     inputs.properties replaceProperties
 
@@ -146,11 +174,27 @@ tasks.withType(ProcessResources).configureEach {
     }
 }
 
+//make sure to shadow on build as a task
+tasks.build {
+    dependsOn tasks.shadowJar
+}
+
 shadowJar {
     configurations = [project.configurations.shadow]
     mergeServiceFiles()
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     zip64 true
+
+    // Exclude all META-INF files from dependencies
+    exclude 'META-INF/**'
+    // Add only required META-INF files from resources otherwise it's not a valid mod. Fucking thanks shading
+    from('src/main/resources/META-INF') {
+        include 'neoforge.mods.toml'
+        include 'MANIFEST.MF'
+        into 'META-INF'
+    }
+
+    // Other excludes and relocations as needed...
     exclude 'org/intellij/**'
     exclude 'org/slf4j/**'
     exclude 'org/jetbrains/**'
@@ -158,19 +202,12 @@ shadowJar {
     exclude 'com/google/**'
     exclude 'kotlin/**'
     exclude 'natives/**'
-    exclude 'META-INF/**'
     exclude '**/*.txt'
     exclude '**/*.xml'
     exclude '**/*.MF'
+    exclude 'javax/**'
+    exclude 'java/**'
 
-//    // Relocate additional MANIFEST.MF files
-//    eachFile { details ->
-//        if (details.path == 'META-INF/MANIFEST.MF') {
-//            details.path = 'META-INF/relocated/' + details.path
-//        }
-//    }
-
-    // Prevent Minecrafts meta inf from being overwritten by shadow
     relocate('net.dv8tion', 'io.github.adainish.cobblemonupdater.shaded.jda')
     relocate('org.apache', 'io.github.adainish.cobblemonupdater.shaded.apache')
     relocate('tomp2p', 'io.github.adainish.cobblemonupdater.shaded.tomp2p')
@@ -181,27 +218,9 @@ shadowJar {
     relocate('okio', 'io.github.adainish.cobblemonupdater.shaded.okio')
     relocate('gnu', 'io.github.adainish.cobblemonupdater.shaded.gnu')
     relocate('okhttp3', 'io.github.adainish.cobblemonupdater.shaded.okhttp3')
-
-//    relocate 'META-INF/MANIFEST.MF', 'META-INF/relocated/MANIFEST.MF'
-//    archiveName = rootProject.name + "-" + rootProject.version + "-shade.jar"
-
-//    manifest {
-//        attributes(
-//                'Manifest-Version': '1.0',
-//                'Fabric-Jar-Type': 'classes',
-//                'Fabric-Loom-Mixin-Remap-Type': 'mixin',
-//                'Fabric-Gradle-Version': '8.3',
-//                'Fabric-Loom-Version': '1.5.8',
-//                'Fabric-Mixin-Compile-Extensions-Version': '0.6.0',
-//                'Fabric-Minecraft-Version': '1.20.1',
-//                'Fabric-Tiny-Remapper-Version': '0.10.0',
-//                'Fabric-Loader-Version': '0.15.11',
-//                'Fabric-Mixin-Version': '0.13.3+mixin.0.8.5',
-//                'Fabric-Mixin-Group': 'net.fabricmc',
-//                'Fabric-Mapping-Namespace': 'intermediary'
-//        )
-//    }
+    relocate('google', 'io.github.adainish.cobblemonupdater.shaded.google')
 }
+
 
 
 // Example configuration to allow publishing using the maven-publish plugin

@@ -11,8 +11,11 @@ import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.ModList;
 import net.neoforged.fml.loading.FMLLoader;
-import net.neoforged.fml.loading.moddiscovery.ModInfo;
+import net.neoforged.neoforgespi.language.IModInfo;
+import org.apache.maven.artifact.versioning.ArtifactVersion;
 import org.w3c.dom.Document;
 import org.w3c.dom.NodeList;
 
@@ -21,6 +24,7 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.file.*;
 import java.util.ArrayList;
@@ -37,7 +41,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
     /**
      * This'll be the URL to check for the latest version of Cobblemon
      * From here we can scan for the right jar build
-     * E.g. https://www.curseforge.com/minecraft/mc-mods/cobblemon/files/all?filter-game-version=2020709689%3A7495
+     * E.g. <a href="https://www.curseforge.com/minecraft/mc-mods/cobblemon/files/all?filter-game-version=2020709689%3A7495">...</a>
      * We need to make sure we always get the latest version for the right MC version
      * So we can parse the page for the right download link
      */
@@ -204,97 +208,108 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
     public String getLatestCobblemonVersionFromURL(boolean useSnapshots) {
         String latestVersion = "unknown";
         String artefactsBase = "https://artefacts.cobblemon.com";
-        String artefactsPath = useSnapshots ? "/snapshots/com/cobblemon/neoforge/" : "/releases/com/cobblemon/neoforge/";
+        String artefactsPath = useSnapshots
+                ? "/snapshots/com/cobblemon/neoforge/"
+                : "/releases/com/cobblemon/neoforge/";
         String listUrl = artefactsBase + artefactsPath;
+
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
             String line;
             Pattern dirPattern = Pattern.compile("href=\"\\.\\/(.+?)\\/\"");
             List<String> versionDirs = new ArrayList<>();
+
             while ((line = reader.readLine()) != null) {
                 Matcher dirMatcher = dirPattern.matcher(line);
                 while (dirMatcher.find()) {
                     versionDirs.add(dirMatcher.group(1));
                 }
             }
-            // Find the highest version directory
-            String highestVersion = null;
+            Logger.log("[DEBUG] Found version directories: " + versionDirs);
+
+            // Remove metadata/xml
+            versionDirs.removeIf(dir -> dir.contains("maven-metadata") || dir.contains(".xml"));
+            Logger.log("[DEBUG] After removing metadata/xml: " + versionDirs);
+
+            String currentMcVersion = getCurrentMinecraftVersion();
+            String bestVersion = null;
+
             for (String dir : versionDirs) {
-                // Only consider non-snapshot dirs if not using snapshots
-                if (!useSnapshots && dir.contains("SNAPSHOT")) continue;
-                String version = dir.split("\\+")[0];
-                if (highestVersion == null || compareVersions(version, highestVersion) > 0) {
-                    highestVersion = version;
+                String dirUrl = listUrl + dir + "/";
+                try (BufferedReader dirReader = new BufferedReader(new InputStreamReader(new URL(dirUrl).openStream()))) {
+                    String dirLine;
+                    Pattern jarPattern = Pattern.compile("href=\"\\./(neoforge-([\\d\\.]+)\\+([\\d\\.]+)(?:-[^\"/]+)?\\.jar)\"");
+                    while ((dirLine = dirReader.readLine()) != null) {
+                        Matcher jarMatcher = jarPattern.matcher(dirLine);
+                        while (jarMatcher.find()) {
+                            String filename = jarMatcher.group(1);
+                            String cobblemonVersion = jarMatcher.group(2);
+                            String mcVersion = jarMatcher.group(3);
+                            if (!useSnapshots && dir.toUpperCase().endsWith("SNAPSHOT")) {
+                                // Only accept if the jar is not a snapshot build
+                                if (!filename.contains("SNAPSHOT")) {
+                                    if (mcVersion.equals(currentMcVersion)) {
+                                        if (bestVersion == null || compareVersions(cobblemonVersion, bestVersion) > 0) {
+                                            bestVersion = cobblemonVersion + "+" + mcVersion;
+                                        }
+                                    }
+                                }
+                            } else {
+                                if (mcVersion.equals(currentMcVersion)) {
+                                    if (bestVersion == null || compareVersions(cobblemonVersion, bestVersion) > 0) {
+                                        bestVersion = cobblemonVersion + "+" + mcVersion;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Logger.log("[DEBUG] Failed to read directory: " + dirUrl + " - " + e.getMessage());
                 }
             }
-            if (highestVersion != null) {
-                latestVersion = highestVersion;
+
+            if (bestVersion != null) {
+                latestVersion = bestVersion;
+                Logger.log("[DEBUG] Selected latest version: " + latestVersion);
             }
         } catch (Exception e) {
             Logger.log(e);
             latestVersion = "No servers available for downloading";
         }
+
         return latestVersion;
     }
 
 
 
 
-    public String getLatestCobblemonVersionURL(String repoBaseUrl) {
-        String group = "com.cobblemon";
-        String artifact = "neoforge";
-        String metadataUrl = repoBaseUrl;
-        if (!metadataUrl.endsWith("/")) metadataUrl += "/";
-        metadataUrl += group.replace('.', '/') + "/" + artifact + "/maven-metadata.xml";
-        String latestVersion = "unknown";
-        try (InputStream in = new URL(metadataUrl).openStream()) {
-            Document doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(in);
-            doc.getDocumentElement().normalize();
-            NodeList latestList = doc.getElementsByTagName("latest");
-            if (latestList.getLength() > 0) {
-                latestVersion = latestList.item(0).getTextContent();
-            } else {
-                NodeList versions = doc.getElementsByTagName("version");
-                if (versions.getLength() > 0) {
-                    latestVersion = versions.item(versions.getLength() - 1).getTextContent();
-                }
-            }
+
+
+
+    public String getCurrentCobblemonVersion() {
+        try {
+            return ModList.get()
+                    .getModContainerById("cobblemon")
+                    .map(ModContainer::getModInfo)
+                    .map(info -> info.getOwningFile().versionString()) // safe version string
+                    .orElse("unknown");
         } catch (Exception e) {
             Logger.log(e);
+            return "unknown";
         }
-        return latestVersion;
     }
 
     public String getCurrentMinecraftVersion() {
         try {
-            // NeoForge: Use ModList to get the Minecraft mod version
-            ModInfo mcInfo =
-                    FMLLoader.getLoadingModList().getModFileById("minecraft").getMods().get(0);
-            String version = mcInfo.getVersion().toString();
-            return version != null ? version : "unknown";
+            return ModList.get()
+                    .getModContainerById("minecraft")
+                    .map(ModContainer::getModInfo)
+                    .map(info -> info.getOwningFile().versionString()) // same trick
+                    .orElse("unknown");
         } catch (Exception e) {
             Logger.log(e);
             return "unknown";
         }
     }
-
-
-    //function to get the current cobblemon version installed on the mc server
-    public String getCurrentCobblemonVersion() {
-        try {
-            ModInfo cobblemonInfo = FMLLoader.getLoadingModList()
-                    .getModFileById("cobblemon")
-                    .getMods()
-                    .get(0);
-            String version = cobblemonInfo.getVersion().toString();
-            return version != null ? version : "unknown";
-        } catch (Exception e) {
-            Logger.log(e);
-            return "unknown";
-        }
-    }
-
-
-
 
     public String currentVersions() {
         return "Minecraft: " + this.getCurrentMinecraftVersion() + ", Cobblemon: " + this.getCurrentCobblemonVersion();
@@ -360,9 +375,8 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         if (!mavenBase.endsWith("/")) mavenBase += "/";
         String mavenJarUrl = mavenBase + group.replace('.', '/') + "/" + artifact + "/" + latestVersion + "/" + artifact + "-" + latestVersion + ".jar";
         boolean downloaded = false;
-
         // Try Maven first
-        try (InputStream in = new URL(mavenJarUrl).openStream()) {
+        try (InputStream in = URI.create(mavenJarUrl).toURL().openStream()) {
             Path modsDir = Paths.get("mods");
             Files.createDirectories(modsDir);
             Path tempFile = modsDir.resolve("cobblemon-latest.jar");
@@ -371,6 +385,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
         } catch (Exception e) {
             Logger.log("Maven download failed, trying Modrinth...");
         }
+
 
         // Helper class
         class NeoForgeJar {
@@ -389,7 +404,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 Logger.log("[DEBUG] Fetching available jars from: " + listUrl);
 
                 List<NeoForgeJar> neoForgeJars = new ArrayList<>();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader( URI.create(listUrl).toURL().openStream()))) {
                     String line;
                     Pattern jarPattern = Pattern.compile("href=\"(Cobblemon-neoforge-([\\d\\.]+)\\+([\\w\\.]+)\\.jar)\"");
                     while ((line = reader.readLine()) != null) {
@@ -416,7 +431,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                     // Parse for subdirectories (version folders)
                     Pattern dirPattern = Pattern.compile("href=\"\\.\\/(.+?)\\/\"");
                     List<String> versionDirs = new ArrayList<>();
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(new URL(listUrl).openStream()))) {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader( URI.create(listUrl).toURL().openStream()))) {
                         String line;
                         while ((line = reader.readLine()) != null) {
                             Matcher dirMatcher = dirPattern.matcher(line);
@@ -431,7 +446,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                     for (String dir : versionDirs) {
                         String dirUrl = listUrl + dir + "/";
                         Logger.log("[DEBUG] Checking directory: " + dirUrl);
-                        try (BufferedReader dirReader = new BufferedReader(new InputStreamReader(new URL(dirUrl).openStream()))) {
+                        try (BufferedReader dirReader = new BufferedReader(new InputStreamReader( URI.create(dirUrl).toURL().openStream()))) {
                             String line;
                             // Match both with and without build suffix
                             Pattern jarPattern = Pattern.compile("href=\"\\./(neoforge-([\\d\\.]+)\\+([\\d\\.]+)(?:-[^\"/]+)?\\.jar)\"");
@@ -493,7 +508,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                         }
                     }
                     Logger.log("Downloading version: " + latest.version + " from: " + latest.url);
-                    try (InputStream jarIn = new URL(latest.url).openStream()) {
+                    try (InputStream jarIn = URI.create(latest.url).toURL().openStream()) {
                         Path modsDir = Paths.get("mods");
                         Files.createDirectories(modsDir);
                         Path tempFile = modsDir.resolve("cobblemon-latest.jar");
@@ -542,7 +557,7 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
     public void updateCobblemonFromUrl(long userID, String jarUrl) {
         try {
             // Step 1: Download the HTML page
-            HttpURLConnection conn = (HttpURLConnection) new URL(jarUrl).openConnection();
+            HttpURLConnection conn = (HttpURLConnection)  URI.create(jarUrl).toURL().openConnection();
             conn.setRequestProperty("User-Agent", "Mozilla/5.0");
             int responseCode = conn.getResponseCode();
             String contentType = conn.getContentType();
@@ -580,12 +595,14 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
             }
 
             // Step 3: Build the absolute URL
-            URL base = new URL(jarUrl);
-            String rawUrl = new URL(base, rawHref).toString();
+// Use URI.create(...).toURL() to avoid deprecated URL(String)
+            URL base = URI.create(jarUrl).toURL();
+            URL rawUrl = base.toURI().resolve(rawHref).toURL();
             Logger.log("Resolved raw artifact URL: " + rawUrl);
 
-            // Step 4: Download the JAR (only once)
-            HttpURLConnection rawConn = (HttpURLConnection) new URL(rawUrl).openConnection();
+// Step 4: Download the JAR (only once)
+            HttpURLConnection rawConn = (HttpURLConnection) rawUrl.openConnection();
+
             rawConn.setRequestProperty("User-Agent", "Mozilla/5.0");
             int rawCode = rawConn.getResponseCode();
             String rawType = rawConn.getContentType();
@@ -597,7 +614,8 @@ public class DiscordBot extends AbstractDiscordBot implements IDiscordBot {
                 return;
             }
 
-            String fileName = rawUrl.substring(rawUrl.lastIndexOf('/') + 1);
+            String urlPath = rawUrl.getPath();
+            String fileName = urlPath.substring(urlPath.lastIndexOf('/') + 1);
             int jarIndex = fileName.indexOf(".jar");
             if (jarIndex != -1) {
                 fileName = fileName.substring(0, jarIndex + 4);

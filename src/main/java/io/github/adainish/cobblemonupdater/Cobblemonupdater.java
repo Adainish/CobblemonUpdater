@@ -4,12 +4,12 @@ import io.github.adainish.cobblemonupdater.api.discord.DiscordBot;
 import io.github.adainish.cobblemonupdater.api.Logger;
 import io.github.adainish.cobblemonupdater.config.Config;
 import net.minecraft.server.MinecraftServer;
-import net.minecraftforge.event.server.ServerStartedEvent;
-import net.minecraftforge.event.server.ServerStoppedEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.fml.loading.FMLPaths;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 
 import java.io.File;
 
